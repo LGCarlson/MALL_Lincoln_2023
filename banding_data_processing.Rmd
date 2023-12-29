@@ -1,0 +1,308 @@
+---
+title: "banding_data_processing"
+author: "LGCarlson"
+date: "2023-12-27"
+output: html_document
+---
+## Data source
+
+This code uses North American bird banding and encounter data, publicly available via USGS ScienceBase at: https://www.sciencebase.gov/catalog/item/653fa806d34ee4b6e05bc57d
+
+Citation: 
+Nakash, E., Malorodova, M., Howes, L., and Celis-Murillo, A., 2023, North American Bird Banding Program Dataset 1960-2023 retrieved 2023-07-12: U.S. Geological Survey data release, https://doi.org/10.5066/P97LQNHY.
+
+The file imported by this code is NABBP__2023_grp_08.csv (mallards), used exactly as downloaded from cited data release.
+
+For summarized annual banding totals by region and species, we recommend visiting https://www.pwrc.usgs.gov/BBL/Bander_Portal/login/bbl_data_request_summary.php
+
+
+## Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(here)
+library(lubridate)
+library(janitor)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggspatial)
+library(sf)
+```
+
+```{r}
+theme_set(theme_light())
+
+#set personalized plotting theme
+LGCtheme <- theme_light() + theme(panel.background = element_blank(), 
+                panel.grid = element_blank(), 
+                axis.text = element_text(size = 13), 
+                axis.title = element_text(size = 14), 
+                legend.text = element_text(size = 13), 
+                legend.title = element_text(size = 14), 
+                strip.background = element_blank(), 
+                strip.text = element_text(size = 13, color = "black"))
+
+gmri_qual_extended<-c("#003A54","#00608A","#5D96AF","#3F4B24","#6F7E4B","#97AA5C","#A8B212","#AF9700","#EACA00","#FFE961","#BB3F0E", "#EA4F12","#F4916B","#00736D", "#55A29E","#A0CDCB","#767676","#A7A7A7","#E2E2E2")
+```
+
+
+```{r}
+grp08_full<-read_csv(here("raw_data","NABBP_2023_grp_08.csv"))
+
+colnames(grp08_full)
+```
+## Definition of fields
+
+_"RECORD_ID"_ - Integer representing unique identifier for the record within NABBP database. May be positive or negative numeric value.
+
+_"EVENT_TYPE"_  - Includes 2 event types: B-Banding, E-Encounter. Definition of encounter here includes record sources for both encounters and recaptures.
+
+_"BAND"_  - Twelve-digit alphanumeric identifier for individual federal metal band on bird at time of data retrieval. Band number is obfuscated.
+Range Domain Minimum: B00066600530
+Range Domain Maximum: B99953318979
+
+_"EVENT_DATE"_  - Text in format mm/dd/yyyy. Event date for a banding record is the date of release. Event date for encounter and recapture records is the date of capture or observation. This is a text field which may include inexact date values. 
+Inexact date codes:
+
+* 41 - first 10 days in the month
+
+* 42 - second 10 days in the month
+
+* 43 - last 10 days in the month
+
+* 99 - unknown day
+
+_"SPECIES_ID"_  -  A 4-digit BBL numeric code to identify species. Species IDs are defined in lookup table species.csv.
+
+* 1320 - mallard
+
+_"ISO_COUNTRY"_  - Two-letter abbreviation of country for bird banding release location, country of capture for encounters and recapture location. Country designations are described in the lookup table country_state.csv.
+
+Categories to keep: 
+
+* CA - Canada
+
+* MX - Mexico
+
+* US - United States
+
+_"ISO_SUBDIVISION"_ - Five-character code for US and Canada, empty for others. For example US-MD, CA-ON. For banding records, country subdivision represents location of bird release. For encounters and recaptures, subdivision represents location of bird capture. US and Canada only are subdivided to state and province. See lookup table country_state.csv.
+
+_"LAT_DD"_   - Latitude, decimal degrees. Location of bird banding, recapture or encounter record.
+
+_"LON_DD"_  - Longitude, decimal degrees. Location of bird banding, recapture or encounter record.   
+
+_"COORD_PREC"_  - See lookup table coordinates_precision.csv. Includes numeric codes for 13 coordinate precision categories. All banding and encounter records for sensitive species are released at a 10-minute block coordinate precision. Gamebirds include waterfowl, cranes, rails, woodcock, doves, crows and ravens. All gamebird bandings are released at a 1-degree block coordinate precision, encounters are released at coordinate precisions as they were originally provided.
+
+* 0 - exact location
+
+* 10 - centroid of 10 minute block
+
+* 11 - approximate location based on centroid of town/place/area
+
+* 33 - Latitude - 10 min block; Longitude - degree block
+
+* 60 - centroid of 1 degree block
+
+_"AGE_CODE"_   
+
+* 0 unknown
+
+* 1 AHY
+
+* 2 HY
+
+* 3 Juvenile
+
+* 4 Local
+
+* 5 SY
+
+* 6 ASY 
+
+_"SEX_CODE"_   
+
+* 0 unknown
+
+* 4 M
+
+* 5 F
+
+* 6 M, sexed upon recapture
+
+* 7 F, sexed upon recapture
+
+_"BIRD_STATUS"_  - Bird status is a single-digit numeric code describing aspects of bird or circumstances at time of banding. 
+
+Categories to keep:
+
+* 3 normal wild
+
+_"EXTRA_INFO"_  - A 2-digit numeric code used with bird status code to describe additional aspects of bird or circumstances at time of banding. See lookup table extra_info.csv for two-digit numeric codes for 43 bird status sub-categories.
+
+_"HOW_OBTAINED"_  - The how_obtained_code describes how a bird was obtained in encounter and recapture records.   
+
+_"WHO_OBTAINED"_    - The who_obtained_code describes finder of a bird obtained in encounter and recapture records.
+
+_"REPORTING_METHOD"_  - Refer to reporting_method.csv lookup table for 2-digit numeric codes and descriptions of 19 categories of reporting methods.
+
+_"PRESENT_CONDITION"_ - Present condition refers to condition of bird and condition of band at time of encounter or recapture. Present_condition.csv lookup table includes 2-digit numeric codes and descriptions for 15 combinations of present condition.
+
+_"MIN_AGE_AT_ENC"_  - The minimum age of a bird at time of encounter or recapture is calculated using difference of dates between banding and encounter records. The decimal value translates to years and months (e.g. 12.25 = 12 years 3 months).
+
+_"BAND_STATUS"_  - Refer to band_status.csv lookup table for alphanumeric codes and descriptions of 10 band status categories. Range of values are 0-8, F,X.
+
+_"BAND_TYPE"_   - Two-digit alphanumeric codes and descriptions of band types and closures. See lookup table band_type.csv.
+
+_"RECORD_SOURCE"_  - Indicates source of record in NABBP database. The record_source.csv lookup table includes 3 record sources: B – banding record, E – encounter record, R – recapture record.
+
+
+
+## Basic field filtering 
+
+Initial processing order of operations:
+
+* Use Janitor package fx clean_names() to  remove capitalization from headers
+
+* Filter only banding data (event_type == "B")
+
+* Filter only normal, wild birds (bird_status == 3)
+
+* Filter only birds with known sex (sex_code not = 0)
+
+* Filter only mallards banded in Canada, Mexico, or USA
+
+```{r}
+grp08_banding<-grp08_full %>% 
+  janitor::clean_names() %>% 
+  filter(event_type == "B") %>% 
+  filter(bird_status == 3) %>% 
+  filter(sex_code != 0) %>% 
+  filter(iso_country %in% c("CA","MX", "US"))
+```
+
+
+
+## Date processing 
+
+* Filter to keep only pre-season banded birds (months 6, 7, 8, 9)
+
+* If banding day of month (event_day) is unknown (99), replace with 15 for middle of month
+
+* Change month and day columns to numeric (currently character)
+
+* Create new banding date column in ymd format
+
+```{r}
+#table(grp08_banding$event_day)
+
+grp08_banding_cdate<- grp08_banding %>% 
+  filter(event_month %in% c("06","07","08","09")) %>% 
+  mutate(event_day = ifelse(event_day == "99", "15", event_day)) %>% 
+  mutate(event_month = as.double(event_month)) %>% 
+  mutate(event_day = as.double(event_day)) %>% 
+  mutate(banding_date = lubridate::as_date(paste(event_year, event_month, event_day, sep = "-")))
+
+#table(grp08_banding_cdate$event_month)
+#table(grp08_banding_cdate$event_day)
+
+head(grp08_banding_cdate)
+```
+
+
+## Spatial processing
+
+```{r, message=FALSE, warning=F}
+# load in world and state sf
+world <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")
+
+states <- rnaturalearth::ne_states(country = c("canada", "united states of america"), returnclass = "sf")
+
+
+#load in flyway shapefiles
+cent_flyway <- sf::st_read(here::here("shapefiles","Central_Flyway.shp")) %>% 
+  st_transform(crs = "+init=epsg:4326") 
+
+miss_flyway <- sf::st_read(here::here("shapefiles","Mississippi_Flyway.shp")) %>% 
+  st_transform(crs = 4326) 
+```
+
+
+```{r}
+# Create spatial data
+grp08_banding_spatial<-st_as_sf(grp08_banding_cdate, coords = c("lon_dd","lat_dd"), crs = 4326) 
+class(grp08_banding_spatial)
+```
+
+Select only mallards banded in the midcontinent (Central and Miss flyways)
+
+```{r}
+# This selects all individuals that were banded inside the Central flyway shapefile
+points_incent <- grp08_banding_spatial[cent_flyway, ]
+
+# Creates a vector of Central flyway banded individuals
+cent_ids<-c(points_incent$record_id)
+length(cent_ids)
+
+# This selects all individuals that were banded inside the Mississippi flyway shapefile
+points_inmiss <- grp08_banding_spatial[miss_flyway, ]
+
+# Creates a vector of Miss flyway banded individuals
+miss_ids<-c(points_inmiss$record_id)
+length(miss_ids)
+
+
+
+# Create a vector of all Midcontinent banded individuals
+midcontinent_ids<-c(cent_ids, miss_ids)
+length(midcontinent_ids)
+
+# Filter processed dataframe to include only midcontinent banded birds
+midcontinent_bands<-grp08_banding_cdate %>% 
+  filter(record_id %in% midcontinent_ids)
+
+```
+
+```{r,fig.height=8, fig.width=8}
+# Create a dataframe reduced by banding location to plot and check for correctness (otherwise will NEVER plot)
+mc_loc_summary<-midcontinent_bands %>% 
+  group_by(lon_dd, lat_dd) %>% 
+  summarise(n=n())
+   
+
+# Plot to confirm (this takes a while to run)
+ggplot(data = world) + geom_sf(fill="white") + 
+  geom_sf(data=states, fill=NA) + 
+  geom_sf(data=cent_flyway, fill="#F4916B") +
+  geom_sf(data=miss_flyway, fill="#F4916B") +
+  geom_point(data=mc_loc_summary, aes(x=lon_dd, y=lat_dd, size=n)) +
+  coord_sf(xlim = c(-130, -70), ylim = c(25, 70), expand = FALSE) + 
+  labs(x="Banding longitude", y="Banding latitude")
+```
+
+## Create final data
+
+Create and save clean, final dataset with only relevant field (remove encounter-specific and redundant fields)
+
+```{r}
+midcontinent_banding_clean<-midcontinent_bands %>% 
+  select(record_id, event_type, band, original_band, banding_date, event_year, species_name, age_code, sex_code, bird_status, iso_country, lat_dd, lon_dd, coord_prec, band_status, band_type) %>% 
+  rename("band_year" = "event_year") %>% 
+  mutate(sex_code = ifelse(sex_code == 6, 4, sex_code)) %>% 
+  mutate(sex_code = ifelse(sex_code == 7, 5, sex_code))
+
+#write_csv(midcontinent_banding_clean,here::here("proc_data", "midcontient_banding_data_clean.csv"))
+```
+
+Create a df of band #s only to use for later filtering of enc data
+
+```{r}
+midcontinent_bands_only<- midcontinent_banding_clean %>% 
+  select(band) 
+
+
+#write_csv(midcontinent_bands_only,here::here("proc_data", "midcontient_bands_only.csv"))
+```
+
